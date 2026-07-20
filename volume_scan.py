@@ -326,7 +326,7 @@ def surge_reason(name):
             headline, source = title.rsplit(" - ", 1)
         else:
             headline, source = title, ""
-        headline = headline.strip()
+        headline = headline.strip().replace("|", "/")   # '|' would break the markdown table
         return f"{headline} ({source})" if source else (headline or "No recent news found")
     except (requests.RequestException, ET.ParseError):
         return "News lookup failed"
