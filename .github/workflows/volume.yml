@@ -1,0 +1,66 @@
+name: Fresh Volume Scan
+
+# Runs on GitHub's servers — fires regardless of whether your machine is on.
+# Manual trigger only (see README — NSE's CDN 503s GitHub-hosted IPs, so this
+# isn't scheduled; run it by hand, ideally with NSE_PROXY_URL set).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write           # allow the job to commit the report back to the repo
+
+jobs:
+  volume:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run volume scan
+        env:
+          # Optional email delivery.
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          # GitHub-hosted runners sit on datacenter IPs that NSE's CDN (Akamai)
+          # 503s outright — see README. Set this repo secret to a residential/
+          # rotating proxy URL (http://user:pass@host:port) to route around it.
+          NSE_PROXY_URL: ${{ secrets.NSE_PROXY_URL }}
+          # Optional tuning (defaults match README). Uncomment to override:
+          # MCAP_MIN: "10000"
+          # VOL_SURGE_MIN: "1.5"
+          # MIN_TURNOVER_LACS: "2000"
+          # NEWS_LOOKBACK_DAYS: "3"
+        run: |
+          # NSE occasionally WAF-blocks the whole runner IP for a run (all
+          # bhavcopy requests fail at once). volume_scan.py already retries
+          # per-request; this retries the whole script a couple of times,
+          # spaced out, in case the block outlasts a single run.
+          for i in 1 2 3; do
+            python volume_scan.py && exit 0
+            echo "volume scan attempt $i failed; retrying in 60s..."
+            sleep 60
+          done
+          exit 1
+
+      - name: Commit report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add reports/
+          if git diff --staged --quiet; then
+            echo "No report changes to commit."; exit 0
+          fi
+          git commit -m "Fresh volume scan $(date -u +%Y-%m-%d)"
+          for i in 1 2 3 4 5; do
+            git pull --rebase --autostash && git push && exit 0
+            echo "push attempt $i failed (likely concurrent commit); retrying..."
+            sleep 5
+          done
+          echo "Could not push after retries."; exit 1
