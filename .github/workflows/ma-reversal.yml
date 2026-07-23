@@ -1,0 +1,73 @@
+name: 52-Week Reversal Scan
+
+# Runs on GitHub's servers — fires regardless of whether your machine is on.
+# Manual trigger only. Pass max_symbols to smoke-test against a small slice
+# of the NSE universe before committing to a full ~2,000-symbol run.
+on:
+  workflow_dispatch:
+    inputs:
+      max_symbols:
+        description: "Limit to first N NSE symbols (0 = full universe)"
+        required: false
+        default: "0"
+
+permissions:
+  contents: write           # allow the job to commit the report back to the repo
+
+jobs:
+  ma-reversal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run 52-week reversal scan
+        env:
+          # Optional email delivery.
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          # GitHub-hosted runners sit on datacenter IPs that NSE's CDN
+          # sometimes blocks. Set this repo secret to a residential/rotating
+          # proxy URL (http://user:pass@host:port) if bhavcopy fetches fail.
+          NSE_PROXY_URL: ${{ secrets.NSE_PROXY_URL }}
+          MAX_SYMBOLS: ${{ github.event.inputs.max_symbols }}
+          # Optional tuning (defaults: Mcap>=5000cr, 40-60% correction band,
+          # fresh cross within 10 trading days). Uncomment to override:
+          # MCAP_MIN: "5000"
+          # CORRECTION_MIN: "40"
+          # CORRECTION_MAX: "60"
+          # CROSS_LOOKBACK_DAYS: "10"
+        run: |
+          # NSE occasionally WAF-blocks the whole runner IP for a run.
+          # ma_reversal_scan.py already retries per-request; this retries the
+          # whole script a couple of times, spaced out, in case the block
+          # outlasts a single run.
+          for i in 1 2 3; do
+            python ma_reversal_scan.py && exit 0
+            echo "reversal scan attempt $i failed; retrying in 60s..."
+            sleep 60
+          done
+          exit 1
+
+      - name: Commit report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add reports/
+          if git diff --staged --quiet; then
+            echo "No report changes to commit."; exit 0
+          fi
+          git commit -m "52-week reversal scan $(date -u +%Y-%m-%d)"
+          for i in 1 2 3 4 5; do
+            git pull --rebase --autostash && git push && exit 0
+            echo "push attempt $i failed (likely concurrent commit); retrying..."
+            sleep 5
+          done
+          echo "Could not push after retries."; exit 1
